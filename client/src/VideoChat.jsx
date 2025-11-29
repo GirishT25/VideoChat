@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 
-const socket = io("http://192.168.136.1:5000");
+// Replace with your LAN IP
+const socket = io("http://192.168.136.1:5000"); 
 
 export default function VideoChat() {
   const localVideo = useRef(null);
@@ -10,7 +11,6 @@ export default function VideoChat() {
   const localStreamRef = useRef(null);
 
   const [room, setRoom] = useState("");
-  
   const [joined, setJoined] = useState(false);
 
   const [messages, setMessages] = useState([]);
@@ -20,69 +20,78 @@ export default function VideoChat() {
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   };
 
-  // Handle socket events
+  // Socket listeners – run only once
   useEffect(() => {
-    socket.on("offer", async ({ sdp }) => {
-      await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+    const handleOffer = async ({ sdp }) => {
+      if (!pcRef.current) await setupConnection();
 
+      await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
       const answer = await pcRef.current.createAnswer();
       await pcRef.current.setLocalDescription(answer);
-
       socket.emit("answer", { room, sdp: answer });
-    });
+    };
 
-    socket.on("answer", async ({ sdp }) => {
+    const handleAnswer = async ({ sdp }) => {
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
-    });
+    };
 
-    socket.on("ice-candidate", ({ candidate }) => {
-      if (candidate && pcRef.current) {
-        pcRef.current.addIceCandidate(candidate);
-      }
-    });
+    const handleCandidate = ({ candidate }) => {
+      pcRef.current?.addIceCandidate(candidate);
+    };
 
-    socket.on("ready", async () => {
+    const handleReady = async () => {
       const offer = await pcRef.current.createOffer();
       await pcRef.current.setLocalDescription(offer);
-
       socket.emit("offer", { room, sdp: offer });
-    });
+    };
 
-    socket.on("chat", (data) => {
+    const handleChat = (data) => {
       setMessages((prev) => [...prev, data]);
-    });
-  }, [room]);
+    };
 
-  // Create peer connection ONLY after join screen disappears
+    socket.on("offer", handleOffer);
+    socket.on("answer", handleAnswer);
+    socket.on("ice-candidate", handleCandidate);
+    socket.on("ready", handleReady);
+    socket.on("chat", handleChat);
+
+    return () => {
+      socket.off("offer", handleOffer);
+      socket.off("answer", handleAnswer);
+      socket.off("ice-candidate", handleCandidate);
+      socket.off("ready", handleReady);
+      socket.off("chat", handleChat);
+    };
+  }, []);
+
+  // Create peer connection after join
   useEffect(() => {
     if (joined) setupConnection();
   }, [joined]);
 
-  async function setupConnection() {
-    // Wait until video elements exist
+  const setupConnection = async () => {
     if (!localVideo.current || !remoteVideo.current) {
       setTimeout(setupConnection, 100);
       return;
     }
 
-    // Camera stream
-    localStreamRef.current = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true,
-    });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localVideo.current.srcObject = stream;
+      localStreamRef.current = stream;
+    } catch (err) {
+      alert("Please allow camera and microphone access.");
+      console.error(err);
+      return;
+    }
 
-    localVideo.current.srcObject = localStreamRef.current;
-
-    // Create peer
     pcRef.current = new RTCPeerConnection(servers);
 
-    // Add local tracks
     localStreamRef.current.getTracks().forEach((track) => {
       pcRef.current.addTrack(track, localStreamRef.current);
     });
 
     pcRef.current.ontrack = (event) => {
-      console.log("Remote stream received");
       remoteVideo.current.srcObject = event.streams[0];
     };
 
@@ -93,25 +102,23 @@ export default function VideoChat() {
     };
 
     socket.emit("join", { room });
-  }
+  };
 
-  function joinRoom() {
-    if (!room) return alert("Enter room ID");
+  const joinRoom = () => {
+    if (!room.trim()) return alert("Enter a Room ID");
     setJoined(true);
-  }
+  };
 
-  function sendMessage() {
-    if (msg.trim() === "") return;
-
+  const sendMessage = () => {
+    if (!msg.trim()) return;
     const data = { room, msg };
-
     socket.emit("chat", data);
     setMessages((prev) => [...prev, data]);
     setMsg("");
-  }
+  };
 
   return (
-    <div>
+    <div style={{ padding: 20 }}>
       {!joined ? (
         <>
           <input
@@ -125,7 +132,6 @@ export default function VideoChat() {
       ) : (
         <>
           <h3>Room: {room}</h3>
-
           <div style={{ display: "flex", gap: 20 }}>
             <video ref={localVideo} autoPlay muted playsInline width="300" />
             <video ref={remoteVideo} autoPlay playsInline width="300" />
